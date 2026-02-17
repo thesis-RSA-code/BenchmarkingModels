@@ -34,7 +34,6 @@ def benchmark_model(model, *args, num_iters=100, warmup=10):
     Returns:
         avg_forward_time, avg_backward_time, total_time, peak_memory
     """
-    device = next(model.parameters()).device
     
     # Warmup
     for _ in range(warmup):
@@ -127,8 +126,8 @@ def save_benchmark_results(filepath, config, results):
 def main():
     # Configuration
     num_event = 15
-    num_partitions = 500
-    avg_pmts_per_event = 5000
+    num_partitions = 10
+    avg_pmts_per_event = 50
     hidden_channels = 80
     num_heads = 8
     depth = 3
@@ -143,7 +142,6 @@ def main():
     compiling_mode = "default"
     save_folder = 'outputs'
 
-    "Note : ajouter le ragged tensor MHA du blog de pytorch dans ce benchmark"
     
     seed = 42
     set_seeds(seed)
@@ -210,14 +208,14 @@ def main():
     )
     
     # Create nested tensor for nested_dense model (no padding, no masking needed)
-    nested_x_list = []
-    offset = 0
-    for b in range(num_event):
-        num_active = batched_partitions['num_active_per_batch'][b].item()
-        nested_x_list.append(x_super_flat[offset:offset+num_active])
-        offset += num_active
+    # nested_x_list = []
+    # offset = 0
+    # for b in range(num_event):
+    #     num_active = batched_partitions['num_active_per_batch'][b].item()
+    #     nested_x_list.append(x_super_flat[offset:offset+num_active])
+    #     offset += num_active
     
-    x_super_nested = torch.nested.nested_tensor(nested_x_list, layout=torch.jagged)
+    # x_super_nested = torch.nested.nested_tensor(nested_x_list, layout=torch.jagged)
     
     print(f"\nData:")
     print(f"  Total active partitions: {total_active_partitions}")
@@ -226,7 +224,7 @@ def main():
           f"mean={batched_partitions['num_active_per_batch'].float().mean().item():.1f}")
     print(f"  x_super shape (flat):    {x_super_flat.shape}")
     print(f"  x_super shape (batched): {x_super_batched.shape}")
-    print(f"  x_super shape (nested):  {x_super_nested}")
+    # print(f"  x_super shape (nested):  {x_super_nested}")
     print(f"  edge_index shape:        {edge_index_super.shape}")
     print(f"  mask shape:              {mask_super.shape}")
     print(f"  Mask sparsity:           {mask_super.float().mean().item()*100:.1f}% True values")
@@ -261,34 +259,37 @@ def main():
         depth=depth
     ).to(device)
     
-    model_nested = TransformerBlock(
-        hidden_channels=hidden_channels,
-        kind="nested_dense",
-        num_heads=num_heads,
-        mlp_expansion_factor=mlp_expansion_factor,
-        dropout=dropout,
-        bias=True,
-        db_precision=db_precision,
-        debug=debug,
-        depth=depth
-    ).to(device)
+    # model_nested = TransformerBlock(
+    #     hidden_channels=hidden_channels,
+    #     kind="nested_dense",
+    #     num_heads=num_heads,
+    #     mlp_expansion_factor=mlp_expansion_factor,
+    #     dropout=dropout,
+    #     bias=True,
+    #     db_precision=db_precision,
+    #     debug=debug,
+    #     depth=depth
+    # ).to(device)
     
     print(f"Model A (Sparse/Edge-Index): {sum(p.numel() for p in model_sparse.parameters())} parameters")
     print(f"Model B (Dense/Padded+Mask): {sum(p.numel() for p in model_dense.parameters())} parameters")
-    print(f"Model C (Nested):            {sum(p.numel() for p in model_nested.parameters())} parameters")
+    # print(f"Model C (Nested):            {sum(p.numel() for p in model_nested.parameters())} parameters")
 
     if compiling:
         print(f"\nCompiling models...")
         model_sparse = torch.compile(model_sparse, mode=compiling_mode, fullgraph=True)
-        model_dense = torch.compile(model_dense, mode=compiling_mode, fullgraph=True)
+        # model_nested = torch.compile(model_nested, mode=compiling_mode, fullgraph=True)
         print(f"Done compiling models.")
+        print(f"  Warning : Dense model uses internal compiled operations, so not compiling it.")
+
+    # model_dense = torch.compile(model_dense, mode=compiling_mode, fullgraph=True)
     
     # Benchmark
     print("\n" + "="*80)
     print("Benchmarking")
     print("="*80)
     
-    print("\n[1] Sparse Transformer (Edge-Index with Full Connectivity - Active Partitions Only)")
+    print("\n    Sparse Transformer (Edge-Index with Full Connectivity - Active Partitions Only)")
     sparse_fwd, sparse_bwd, sparse_total, sparse_mem = benchmark_model(
         model_sparse, x_super_flat, edge_index_super,
         num_iters=50, warmup=10
@@ -298,7 +299,7 @@ def main():
     print(f"  Total:    {sparse_total*1000:.3f} ms")
     print(f"  Memory:   {sparse_mem/1e9:.3f} GB")
     
-    print("\n[2] Dense Transformer (Batched SDPA with Masking)")
+    print("\n    Dense Transformer (Batched SDPA with Masking)")
     dense_fwd, dense_bwd, dense_total, dense_mem = benchmark_model(
         model_dense, x_super_batched, mask_super,
         num_iters=50, warmup=10
@@ -308,15 +309,15 @@ def main():
     print(f"  Total:    {dense_total*1000:.3f} ms")
     print(f"  Memory:   {dense_mem/1e9:.3f} GB")
     
-    print("\n[3] Nested Transformer (NestedTensor with torch.jagged layout)")
-    nested_fwd, nested_bwd, nested_total, nested_mem = benchmark_model(
-        model_nested, x_super_nested,
-        num_iters=50, warmup=10
-    )
-    print(f"  Forward:  {nested_fwd*1000:.3f} ms")
-    print(f"  Backward: {nested_bwd*1000:.3f} ms")
-    print(f"  Total:    {nested_total*1000:.3f} ms")
-    print(f"  Memory:   {nested_mem/1e9:.3f} GB")
+    # print("\n    Nested Transformer (NestedTensor with torch.jagged layout)")
+    # nested_fwd, nested_bwd, nested_total, nested_mem = benchmark_model(
+    #     model_nested, x_super_nested,
+    #     num_iters=50, warmup=10
+    # )
+    # print(f"  Forward:  {nested_fwd*1000:.3f} ms")
+    # print(f"  Backward: {nested_bwd*1000:.3f} ms")
+    # print(f"  Total:    {nested_total*1000:.3f} ms")
+    # print(f"  Memory:   {nested_mem/1e9:.3f} GB")
     
     # Summary
     print("\n" + "="*80)
@@ -326,15 +327,15 @@ def main():
     print("-"*80)
     print(f"{'Sparse (Edge-Index)':<40} {sparse_fwd*1000:<12.3f} {sparse_bwd*1000:<12.3f} {sparse_total*1000:<12.3f} {sparse_mem/1e9:<10.3f}")
     print(f"{'Dense (Padded + Mask)':<40} {dense_fwd*1000:<12.3f} {dense_bwd*1000:<12.3f} {dense_total*1000:<12.3f} {dense_mem/1e9:<10.3f}")
-    print(f"{'Nested (torch.jagged)':<40} {nested_fwd*1000:<12.3f} {nested_bwd*1000:<12.3f} {nested_total*1000:<12.3f} {nested_mem/1e9:<10.3f}")
+    # print(f"{'Nested (torch.jagged)':<40} {nested_fwd*1000:<12.3f} {nested_bwd*1000:<12.3f} {nested_total*1000:<12.3f} {nested_mem/1e9:<10.3f}")
     print("-"*80)
     print(f"\nSpeedup vs Sparse (Edge-Index):")
     print(f"  Dense:  {sparse_total/dense_total:.2f}x")
-    print(f"  Nested: {sparse_total/nested_total:.2f}x")
-    print(f"\nSpeedup (Nested vs Dense): {dense_total/nested_total:.2f}x")
+    # print(f"  Nested: {sparse_total/nested_total:.2f}x")
+    # print(f"\nSpeedup (Nested vs Dense): {dense_total/nested_total:.2f}x")
     print(f"\nMemory vs Sparse:")
     print(f"  Dense:  {(1 - dense_mem/sparse_mem)*100:+.1f}%")
-    print(f"  Nested: {(1 - nested_mem/sparse_mem)*100:+.1f}%")
+    # print(f"  Nested: {(1 - nested_mem/sparse_mem)*100:+.1f}%")
     
     # Save results
     config = {
@@ -373,12 +374,12 @@ def main():
             'total_time': dense_total,
             'peak_memory': dense_mem,
         },
-        'nested': {
-            'forward_time': nested_fwd,
-            'backward_time': nested_bwd,
-            'total_time': nested_total,
-            'peak_memory': nested_mem,
-        },
+        # 'nested': {
+        #     'forward_time': nested_fwd,
+        #     'backward_time': nested_bwd,
+        #     'total_time': nested_total,
+    #         'peak_memory': nested_mem,
+    #     },
     }
     
     timestamp = time.strftime("%Y%m%d_%H%M%S")
