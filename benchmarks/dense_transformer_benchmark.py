@@ -19,6 +19,7 @@ import os
 import time
 import numpy as np
 import torch
+from tqdm import tqdm
 
 from utils.init_main import is_running_in_container
 
@@ -36,7 +37,7 @@ def benchmark_model(model, *args, num_iters=100, warmup=10):
     """
     
     # Warmup
-    for _ in range(warmup):
+    for _ in tqdm(range(warmup), desc="Warmup", leave=False):
         output = model(*args)
         loss = output.sum()
         loss.backward()
@@ -48,7 +49,7 @@ def benchmark_model(model, *args, num_iters=100, warmup=10):
     forward_times = []
     backward_times = []
     
-    for _ in range(num_iters):
+    for _ in tqdm(range(num_iters), desc="Benchmark", leave=False):
         # Forward
         torch.cuda.synchronize()
         fwd_start = time.time()
@@ -125,12 +126,12 @@ def save_benchmark_results(filepath, config, results):
 
 def main():
     # Configuration
-    num_event = 15
+    num_event = 10
     num_partitions = 10
     avg_pmts_per_event = 50
-    hidden_channels = 80
-    num_heads = 8
-    depth = 3
+    hidden_channels = 60
+    num_heads = 6
+    depth = 4
     mlp_expansion_factor = 2
     dropout = 0.0
     fused_qkv = True
@@ -138,7 +139,7 @@ def main():
     use_spda_for_dense = True
     debug = False
     device = 'cuda'
-    compiling = False
+    compiling = True
     compiling_mode = "default"
     save_folder = 'outputs'
 
