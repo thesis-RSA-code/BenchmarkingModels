@@ -47,14 +47,16 @@ def load_and_display(npz_path):
     else:
         # Edge creation benchmark
         print(f"  Benchmark type:          Edge Creation")
+        print(f"  Batch size:              {data.get('config/batch_size', 'N/A')}")
         print(f"  Num partitions:          {data['config/num_partitions']}")
-        print(f"  Avg nodes per partition: {data.get('config/avg_nodes_per_partition', 'N/A')}")
-        print(f"  Hidden channels:         {data['config/hidden_channels']}")
-        print(f"  Num heads:               {data['config/num_heads']}")
+        print(f"  Avg partition size:      {data.get('config/avg_partition_size', 'N/A')}")
+        print(f"  Sparsity:                {data.get('config/sparsity', 'N/A')}")
+        print(f"  Max partition size:      {data.get('config/max_partition_size', 'N/A')}")
         if 'config/num_cls_tokens' in data:
             print(f"  Num CLS tokens:          {data['config/num_cls_tokens']}")
-        print(f"  DB precision:            {data.get('config/db_precision', 'N/A')}")
-        print(f"  Compiled:                {data.get('config/compiled', 'N/A')}")
+        print(f"  Use compile:             {data.get('config/use_compile', 'N/A')}")
+        print(f"  Warmup iters:            {data.get('config/warmup', 'N/A')}")
+        print(f"  Benchmark iters:         {data.get('config/num_iters', 'N/A')}")
     
     # Display batch stats
     print("\nBatch Statistics:")
@@ -65,91 +67,116 @@ def load_and_display(npz_path):
             print(f"  Active per event (max):  {data['batch/max_active_per_event']}")
             print(f"  Active per event (mean): {data['batch/mean_active_per_event']:.1f}")
     else:
-        if 'batch/total_nodes' in data:
-            print(f"  Total nodes:     {data['batch/total_nodes']}")
-        if 'batch/total_cls' in data:
-            print(f"  Total CLS:       {data['batch/total_cls']}")
-        if 'batch/total_pmts' in data:
-            print(f"  Total PMTs:      {data['batch/total_pmts']}")
+        if 'batch_stats/total_nodes' in data:
+            print(f"  Total nodes:             {data['batch_stats/total_nodes']}")
+        if 'batch_stats/total_edges' in data:
+            print(f"  Total edges:             {data['batch_stats/total_edges']}")
+        if 'batch_stats/avg_nodes_per_partition' in data:
+            print(f"  Avg nodes per partition: {data['batch_stats/avg_nodes_per_partition']:.1f}")
     
     # Display results
     print("\n" + "-" * 80)
-    print(f"{'Model':<35} {'Fwd (ms)':<12} {'Bwd (ms)':<12} {'Total (ms)':<12} {'Memory (GB)':<12}")
-    print("-" * 80)
     
-    # Detect which models are present
     if is_transformer:
-        models = ['edge_index', 'sparse', 'dense', 'nested']
+        print(f"{'Model':<35} {'Fwd (ms)':<12} {'Bwd (ms)':<12} {'Total (ms)':<12} {'Memory (GB)':<12}")
+        print("-" * 80)
+        
+        # Detect which models are present
+        models = ['edge_index', 'sparse', 'dense', 'torch_mha']
         model_names = {
             'edge_index': 'Sparse (Edge-Index)',
             'sparse': 'Sparse Transformer',
             'dense': 'Dense (Padded + Mask)',
-            'nested': 'Nested (torch.jagged)',
+            'torch_mha': 'Torch MHA (nn.MultiheadAttention)',
         }
-    else:
-        models = ['sparse_loop', 'sparse_vec', 'dense_vanilla', 'dense_fused', 'dense_sdpa']
-        model_names = {
-            'sparse_loop': 'Sparse (Loop edges)',
-            'sparse_vec': 'Sparse (Vec edges)',
-            'dense_vanilla': 'Dense (Vanilla + Mask)',
-            'dense_fused': 'Dense (Fused + Mask)',
-            'dense_sdpa': 'Dense (SDPA)',
-        }
-    
-    results = {}
-    for model in models:
-        try:
-            fwd_key = f'results/{model}/forward_time_ms'
-            bwd_key = f'results/{model}/backward_time_ms'
-            total_key = f'results/{model}/total_time_ms'
-            mem_key = f'results/{model}/peak_memory_gb'
-            
-            if fwd_key in data:
-                fwd = float(data[fwd_key])
-                bwd = float(data[bwd_key])
-                total = float(data[total_key])
-                mem = float(data[mem_key])
+        
+        results = {}
+        for model in models:
+            try:
+                fwd_key = f'results/{model}/forward_time_ms'
+                bwd_key = f'results/{model}/backward_time_ms'
+                total_key = f'results/{model}/total_time_ms'
+                mem_key = f'results/{model}/peak_memory_gb'
                 
-                results[model] = {'fwd': fwd, 'bwd': bwd, 'total': total, 'mem': mem}
-                print(f"{model_names.get(model, model):<35} {fwd:<12.3f} {bwd:<12.3f} {total:<12.3f} {mem:<12.3f}")
-        except KeyError:
-            continue
+                if fwd_key in data:
+                    fwd = float(data[fwd_key])
+                    bwd = float(data[bwd_key])
+                    total = float(data[total_key])
+                    mem = float(data[mem_key])
+                    
+                    results[model] = {'fwd': fwd, 'bwd': bwd, 'total': total, 'mem': mem}
+                    print(f"{model_names.get(model, model):<35} {fwd:<12.3f} {bwd:<12.3f} {total:<12.3f} {mem:<12.3f}")
+            except KeyError:
+                continue
+    else:
+        # Edge creation benchmark - only time and memory
+        print(f"{'Method':<35} {'Time (ms)':<15} {'Memory (MB)':<15}")
+        print("-" * 80)
+        
+        # Detect which methods are present - check both compiled and non-compiled
+        methods = ['loop', 'vectorized', 'dense_mask', 'loop_compiled', 'vectorized_compiled', 'dense_mask_compiled']
+        method_names = {
+            'loop': 'Loop (edges)',
+            'vectorized': 'Vectorized (edges)',
+            'dense_mask': 'Dense (padded masks)',
+            'loop_compiled': 'Loop Compiled (edges)',
+            'vectorized_compiled': 'Vectorized Compiled (edges)',
+            'dense_mask_compiled': 'Dense Compiled (padded masks)',
+        }
+        
+        results = {}
+        for method in methods:
+            try:
+                time_key = f'{method}/time'
+                mem_key = f'{method}/memory'
+                
+                if time_key in data:
+                    time_val = float(data[time_key]) * 1000  # Convert to ms
+                    mem_val = float(data[mem_key]) / 1e6     # Convert to MB
+                    
+                    results[method] = {'time': time_val, 'mem': mem_val}
+                    print(f"{method_names.get(method, method):<35} {time_val:<15.3f} {mem_val:<15.2f}")
+            except KeyError:
+                continue
     
     print("-" * 80)
     
-    # Edge creation times (for edge creation benchmarks)
-    if not is_transformer:
-        print("\nEdge Creation Times:")
-        if 'results/sparse_loop/edge_creation_time_ms' in data:
-            loop_edge = float(data['results/sparse_loop/edge_creation_time_ms'])
-            print(f"  Loop-based:    {loop_edge:.3f} ms")
-        if 'results/sparse_vec/edge_creation_time_ms' in data:
-            vec_edge = float(data['results/sparse_vec/edge_creation_time_ms'])
-            print(f"  Vectorized:    {vec_edge:.3f} ms")
-            if 'results/sparse_loop/edge_creation_time_ms' in data:
-                speedup = loop_edge / vec_edge
-                print(f"  Speedup:       {speedup:.2f}x")
-    
     # Speedup analysis
     if len(results) > 1:
-        # Use first model as baseline
-        baseline_model = list(results.keys())[0]
-        baseline_total = results[baseline_model]['total']
-        baseline_mem = results[baseline_model]['mem']
+        # Find baseline
+        if is_transformer:
+            baseline_model = 'edge_index' if 'edge_index' in results else list(results.keys())[0]
+            baseline_val = results[baseline_model]['total']
+            metric = 'total'
+        else:
+            # For edge creation, prefer compiled loop as baseline
+            if 'loop_compiled' in results:
+                baseline_model = 'loop_compiled'
+            elif 'loop' in results:
+                baseline_model = 'loop'
+            else:
+                baseline_model = list(results.keys())[0]
+            baseline_val = results[baseline_model]['time']
+            metric = 'time'
         
-        print(f"\nSpeedup vs {model_names.get(baseline_model, baseline_model)}:")
+        baseline_mem = results[baseline_model].get('mem', 0)
+        model_names_dict = model_names if is_transformer else method_names
+        
+        print(f"\nSpeedup vs {model_names_dict.get(baseline_model, baseline_model)}:")
         for model, res in results.items():
             if model != baseline_model:
-                speedup = baseline_total / res['total']
-                print(f"  {model_names.get(model, model):<30} {speedup:>6.2f}x")
+                speedup = baseline_val / res[metric]
+                print(f"  {model_names_dict.get(model, model):<30} {speedup:>6.2f}x")
         
         # Memory comparison
-        print(f"\nMemory vs {model_names.get(baseline_model, baseline_model)}:")
-        for model, res in results.items():
-            if model != baseline_model:
-                mem_ratio = res['mem'] / baseline_mem
-                mem_diff = res['mem'] - baseline_mem
-                print(f"  {model_names.get(model, model):<30} {mem_ratio:>6.2f}x ({mem_diff:+.3f} GB)")
+        if baseline_mem > 0:
+            print(f"\nMemory vs {model_names_dict.get(baseline_model, baseline_model)}:")
+            for model, res in results.items():
+                if model != baseline_model and 'mem' in res:
+                    mem_ratio = res['mem'] / baseline_mem
+                    mem_diff = res['mem'] - baseline_mem
+                    mem_unit = ' GB' if is_transformer else ' MB'
+                    print(f"  {model_names_dict.get(model, model):<30} {mem_ratio:>6.2f}x ({mem_diff:+.2f}{mem_unit})")
     
     print("\n" + "=" * 80 + "\n")
 

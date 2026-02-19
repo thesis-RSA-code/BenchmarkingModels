@@ -1,7 +1,7 @@
 import torch
 
 
-def create_star_edges_loop(partition_counts, num_cls_tokens, device):
+def create_star_edges_loop(partition_pmts_count, num_cls_tokens, device):
     """
     Loop-based edge creation (baseline).
     
@@ -12,7 +12,7 @@ def create_star_edges_loop(partition_counts, num_cls_tokens, device):
     Pattern: star_node -> all_nodes (unidirectional)
     
     Args:
-        partition_counts: [num_active_partitions] - number of PMTs in each partition
+        partition_pmts_count: [num_active_partitions] - number of PMTs in each partition
         num_cls_tokens: int - number of CLS tokens per partition
         device: torch device
         
@@ -22,10 +22,10 @@ def create_star_edges_loop(partition_counts, num_cls_tokens, device):
     edge_list = []
     node_offset = 0
     
-    num_active_partitions = partition_counts.size(0)
+    num_active_partitions = partition_pmts_count.size(0)
     
     for i in range(num_active_partitions):
-        num_pmts_in_partition = partition_counts[i].item()
+        num_pmts_in_partition = partition_pmts_count[i].item()
         total_nodes_in_partition = num_cls_tokens + num_pmts_in_partition
         
         # Create star graph edges for this partition
@@ -46,7 +46,7 @@ def create_star_edges_loop(partition_counts, num_cls_tokens, device):
     edge_index = torch.cat(edge_list, dim=1)
     return edge_index
 
-def create_star_edges_vectorized(partition_counts, num_cls_tokens, device):
+def create_star_edges_vectorized(partition_pmts_count, num_cls_tokens, device):
     """
     Improved vectorized star graph edge creation using repeat_interleave for batch operations.
     
@@ -54,17 +54,17 @@ def create_star_edges_vectorized(partition_counts, num_cls_tokens, device):
     Star pattern: CLS tokens attend to all nodes, PMTs don't attend to each other.
     
     Args:
-        partition_counts: [num_active_partitions] - number of PMTs in each partition
+        partition_pmts_count: [size : num_active_partitions] - list with thenumber of PMTs in each partition
         num_cls_tokens: int - number of CLS tokens per partition
         device: torch device
         
     Returns:
         edge_index: [2, total_edges] - edge indices (src=CLS only, dst=all nodes)
     """
-    num_active_partitions = partition_counts.size(0)
+    num_active_partitions = partition_pmts_count.size(0)
     
     # Total nodes per partition
-    nodes_per_partition = partition_counts + num_cls_tokens
+    nodes_per_partition = partition_pmts_count + num_cls_tokens
     
     # Cumulative node offsets
     node_offsets = torch.cat([
@@ -79,11 +79,22 @@ def create_star_edges_vectorized(partition_counts, num_cls_tokens, device):
     # Create partition ID for each edge
     partition_ids = torch.arange(num_active_partitions, device=device).repeat_interleave(edges_per_partition)
     
-    # For each edge, compute its local position within the partition's edge list
-    edge_positions = torch.cat([
-        torch.arange(edges_per_partition[i].item(), device=device)
-        for i in range(num_active_partitions)
+    # =====================================================================
+    # VECTORIZED edge position computation (NO Python loops!)
+    # =====================================================================
+    # Create cumulative boundaries for edges
+    total_edges = edges_per_partition.sum().item()
+    edge_boundaries = torch.cat([
+        torch.tensor([0], device=device),
+        torch.cumsum(edges_per_partition, dim=0)
     ])
+    
+    # For each edge, find its local position within its partition
+    # Use global edge index and subtract the start of its partition
+    global_edge_idx = torch.arange(total_edges, device=device)
+    partition_starts = edge_boundaries[:-1][partition_ids]
+    edge_positions = global_edge_idx - partition_starts
+    # =====================================================================
     
     # Convert edge position to (src, dst) within partition (star pattern)
     # src cycles through CLS tokens (0 to num_cls-1)

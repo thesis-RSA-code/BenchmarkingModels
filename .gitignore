@@ -4,3 +4,5 @@ __pycache__/
 CHANGES.md
 launch/run_container_benchmark.sh
 launch/submit_container_benchmark.sh
+
+logs/

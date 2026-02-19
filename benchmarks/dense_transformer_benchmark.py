@@ -83,7 +83,7 @@ def save_benchmark_results(filepath, config, results):
         # Configuration
         'config/num_event': config['num_event'],
         'config/num_partitions': config['num_partitions'],
-        'config/avg_pmts_per_event': config.get('avg_pmts_per_event', 0),
+        # 'config/avg_pmts_per_partition': config.get('avg_pmts_per_partition', 0),
         'config/hidden_channels': config['hidden_channels'],
         'config/num_heads': config['num_heads'],
         'config/depth': config['depth'],
@@ -126,9 +126,12 @@ def save_benchmark_results(filepath, config, results):
 
 def main():
     # Configuration
-    num_event = 10
-    num_partitions = 10
-    avg_pmts_per_event = 50
+    num_event = 30
+    num_partitions = 500
+    # avg_pmts_per_partition = 5000
+    min_pmts_per_partition = 10
+    max_pmts_per_partition = 300
+    distribution = 'realistic'
     hidden_channels = 60
     num_heads = 6
     depth = 4
@@ -143,7 +146,6 @@ def main():
     compiling_mode = "default"
     save_folder = 'outputs'
 
-    
     seed = 42
     set_seeds(seed)
     
@@ -159,12 +161,15 @@ def main():
     print(f"  Device: {device}")
     
     # Generate dummy partition data with non-active partitions
+    if distribution == 'realistic': 
+        print(f"   Warning: using realistic distribution for partitions. "
+              f"This mode does not use min_size and max_size parameters.")
     batched_partitions = generate_batched_partitions(
         batch_size=num_event,
         num_partitions=num_partitions,
-        min_size=int(avg_pmts_per_event * 0.8),
-        max_size=int(avg_pmts_per_event * 1.2),
-        distribution='realistic',
+        min_size=min_pmts_per_partition,
+        max_size=max_pmts_per_partition,
+        distribution=distribution,
         device=device,
         seed=seed
     )
@@ -208,15 +213,6 @@ def main():
         device=device
     )
     
-    # Create nested tensor for nested_dense model (no padding, no masking needed)
-    # nested_x_list = []
-    # offset = 0
-    # for b in range(num_event):
-    #     num_active = batched_partitions['num_active_per_batch'][b].item()
-    #     nested_x_list.append(x_super_flat[offset:offset+num_active])
-    #     offset += num_active
-    
-    # x_super_nested = torch.nested.nested_tensor(nested_x_list, layout=torch.jagged)
     
     print(f"\nData:")
     print(f"  Total active partitions: {total_active_partitions}")
@@ -225,11 +221,11 @@ def main():
           f"mean={batched_partitions['num_active_per_batch'].float().mean().item():.1f}")
     print(f"  x_super shape (flat):    {x_super_flat.shape}")
     print(f"  x_super shape (batched): {x_super_batched.shape}")
-    # print(f"  x_super shape (nested):  {x_super_nested}")
     print(f"  edge_index shape:        {edge_index_super.shape}")
     print(f"  mask shape:              {mask_super.shape}")
     print(f"  Mask sparsity:           {mask_super.float().mean().item()*100:.1f}% True values")
-    
+    print_partition_statistics(batched_partitions['partition_counts'])
+
     # Create models
     print("\n" + "="*80)
     print("Creating Models")
@@ -260,26 +256,27 @@ def main():
         depth=depth
     ).to(device)
     
-    # model_nested = TransformerBlock(
-    #     hidden_channels=hidden_channels,
-    #     kind="nested_dense",
-    #     num_heads=num_heads,
-    #     mlp_expansion_factor=mlp_expansion_factor,
-    #     dropout=dropout,
-    #     bias=True,
-    #     db_precision=db_precision,
-    #     debug=debug,
-    #     depth=depth
-    # ).to(device)
+    
+    model_torch_mha = TransformerBlock(
+        hidden_channels=hidden_channels,
+        kind="torch_mha",
+        num_heads=num_heads,
+        mlp_expansion_factor=mlp_expansion_factor,
+        dropout=dropout,
+        bias=True,
+        db_precision=db_precision,
+        debug=debug,
+        depth=depth
+    ).to(device)
     
     print(f"Model A (Sparse/Edge-Index): {sum(p.numel() for p in model_sparse.parameters())} parameters")
     print(f"Model B (Dense/Padded+Mask): {sum(p.numel() for p in model_dense.parameters())} parameters")
-    # print(f"Model C (Nested):            {sum(p.numel() for p in model_nested.parameters())} parameters")
+    print(f"Model C (Torch MHA):         {sum(p.numel() for p in model_torch_mha.parameters())} parameters")
 
     if compiling:
         print(f"\nCompiling models...")
         model_sparse = torch.compile(model_sparse, mode=compiling_mode, fullgraph=True)
-        # model_nested = torch.compile(model_nested, mode=compiling_mode, fullgraph=True)
+        model_torch_mha = torch.compile(model_torch_mha, mode=compiling_mode, fullgraph=True)
         print(f"Done compiling models.")
         print(f"  Warning : Dense model uses internal compiled operations, so not compiling it.")
 
@@ -310,15 +307,15 @@ def main():
     print(f"  Total:    {dense_total*1000:.3f} ms")
     print(f"  Memory:   {dense_mem/1e9:.3f} GB")
     
-    # print("\n    Nested Transformer (NestedTensor with torch.jagged layout)")
-    # nested_fwd, nested_bwd, nested_total, nested_mem = benchmark_model(
-    #     model_nested, x_super_nested,
-    #     num_iters=50, warmup=10
-    # )
-    # print(f"  Forward:  {nested_fwd*1000:.3f} ms")
-    # print(f"  Backward: {nested_bwd*1000:.3f} ms")
-    # print(f"  Total:    {nested_total*1000:.3f} ms")
-    # print(f"  Memory:   {nested_mem/1e9:.3f} GB")
+    print("\n[3] Torch MHA Transformer (PyTorch nn.MultiheadAttention)")
+    torch_mha_fwd, torch_mha_bwd, torch_mha_total, torch_mha_mem = benchmark_model(
+        model_torch_mha, x_super_batched, mask_super,
+        num_iters=50, warmup=10
+    )
+    print(f"  Forward:  {torch_mha_fwd*1000:.3f} ms")
+    print(f"  Backward: {torch_mha_bwd*1000:.3f} ms")
+    print(f"  Total:    {torch_mha_total*1000:.3f} ms")
+    print(f"  Memory:   {torch_mha_mem/1e9:.3f} GB")
     
     # Summary
     print("\n" + "="*80)
@@ -328,21 +325,22 @@ def main():
     print("-"*80)
     print(f"{'Sparse (Edge-Index)':<40} {sparse_fwd*1000:<12.3f} {sparse_bwd*1000:<12.3f} {sparse_total*1000:<12.3f} {sparse_mem/1e9:<10.3f}")
     print(f"{'Dense (Padded + Mask)':<40} {dense_fwd*1000:<12.3f} {dense_bwd*1000:<12.3f} {dense_total*1000:<12.3f} {dense_mem/1e9:<10.3f}")
-    # print(f"{'Nested (torch.jagged)':<40} {nested_fwd*1000:<12.3f} {nested_bwd*1000:<12.3f} {nested_total*1000:<12.3f} {nested_mem/1e9:<10.3f}")
+    print(f"{'Torch MHA (nn.MultiheadAttention)':<40} {torch_mha_fwd*1000:<12.3f} {torch_mha_bwd*1000:<12.3f} {torch_mha_total*1000:<12.3f} {torch_mha_mem/1e9:<10.3f}")
     print("-"*80)
     print(f"\nSpeedup vs Sparse (Edge-Index):")
-    print(f"  Dense:  {sparse_total/dense_total:.2f}x")
-    # print(f"  Nested: {sparse_total/nested_total:.2f}x")
-    # print(f"\nSpeedup (Nested vs Dense): {dense_total/nested_total:.2f}x")
+    print(f"  Dense:     {sparse_total/dense_total:.2f}x")
+    print(f"  Torch MHA: {sparse_total/torch_mha_total:.2f}x")
+    print(f"\nSpeedup (Torch MHA vs Dense): {dense_total/torch_mha_total:.2f}x")
     print(f"\nMemory vs Sparse:")
-    print(f"  Dense:  {(1 - dense_mem/sparse_mem)*100:+.1f}%")
-    # print(f"  Nested: {(1 - nested_mem/sparse_mem)*100:+.1f}%")
+    print(f"  Dense:     {(1 - dense_mem/sparse_mem)*100:+.1f}%")
+    print(f"  Torch MHA: {(1 - torch_mha_mem/sparse_mem)*100:+.1f}%")
     
     # Save results
     config = {
         'num_event': num_event,
         'num_partitions': num_partitions,
-        'avg_pmts_per_event': avg_pmts_per_event,
+        'min_pmts_per_partition': min_pmts_per_partition,
+        'max_pmts_per_partition': max_pmts_per_partition,
         'hidden_channels': hidden_channels,
         'num_heads': num_heads,
         'depth': depth,
@@ -375,12 +373,12 @@ def main():
             'total_time': dense_total,
             'peak_memory': dense_mem,
         },
-        # 'nested': {
-        #     'forward_time': nested_fwd,
-        #     'backward_time': nested_bwd,
-        #     'total_time': nested_total,
-    #         'peak_memory': nested_mem,
-    #     },
+        'torch_mha': {
+            'forward_time': torch_mha_fwd,
+            'backward_time': torch_mha_bwd,
+            'total_time': torch_mha_total,
+            'peak_memory': torch_mha_mem,
+        },
     }
     
     timestamp = time.strftime("%Y%m%d_%H%M%S")
@@ -404,7 +402,7 @@ if __name__ == '__main__':
 
     from layers.transformer import TransformerBlock
     from utils.set_seeds import set_seeds
-    from pc_func.make_partitions import generate_batched_partitions
+    from pc_func.make_partitions import generate_batched_partitions, print_partition_statistics
     from pc_func.make_fully_connected import create_fully_connected_edges, create_fully_connected_mask
     
     main()

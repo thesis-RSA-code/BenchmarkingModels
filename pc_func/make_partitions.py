@@ -95,7 +95,7 @@ def generate_batched_partitions(batch_size=16,
                                 distribution='realistic',
                                 device='cpu',
                                 seed=None):
-    """
+    r"""
     Generate dummy partitions for multiple events (batched).
     
     Simulates real training scenario where you have multiple events,
