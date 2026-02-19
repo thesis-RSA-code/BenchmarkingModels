@@ -2,10 +2,6 @@ import torch
 from layers.transformer import TransformerBlock
 
 
-"""
-
-"""
-
 class PatchDenseTransformer(torch.nn.Module):
     """Wrapper for patch dense transformer with masking and aggregation to supernodes.
     
